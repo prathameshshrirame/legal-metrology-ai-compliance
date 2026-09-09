@@ -34,6 +34,7 @@ export interface InspectionRecord {
   timestamp: string;
   productName: string;
   imageUri: string;
+  imageUris?: string[];
   declarations: InspectionDeclaration;
   complianceChecks: ComplianceCheck[];
   overallStatus: 'PASS' | 'REVIEW REQUIRED';

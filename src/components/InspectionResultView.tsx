@@ -41,6 +41,13 @@ export const InspectionResultView: React.FC<InspectionResultViewProps> = ({
   const [isSavedState, setIsSavedState] = useState(isSaved);
   const [isZoomOpen, setIsZoomOpen] = useState(false);
   const [showRawText, setShowRawText] = useState(false);
+  const [activeEvidenceIndex, setActiveEvidenceIndex] = useState(0);
+
+  const evidenceList =
+    record.imageUris && record.imageUris.length > 0
+      ? record.imageUris
+      : [record.imageUri];
+  const activeImage = evidenceList[activeEvidenceIndex] || record.imageUri;
 
   const isPass = record.overallStatus === 'PASS';
 
@@ -224,7 +231,7 @@ export const InspectionResultView: React.FC<InspectionResultViewProps> = ({
               className="relative aspect-[4/3] bg-slate-950 rounded-xl overflow-hidden cursor-zoom-in group border border-slate-200"
             >
               <img
-                src={record.imageUri}
+                src={activeImage}
                 alt="Product Package Evidence"
                 className="w-full h-full object-contain group-hover:scale-105 transition duration-300"
               />
@@ -232,10 +239,48 @@ export const InspectionResultView: React.FC<InspectionResultViewProps> = ({
                 <Maximize2 className="w-5 h-5 mr-1.5" />
                 Click to expand evidence view
               </div>
+              {evidenceList.length > 1 && (
+                <div className="absolute bottom-2 left-2 bg-black/75 px-2.5 py-1 rounded text-[10px] text-white font-semibold backdrop-blur-xs">
+                  Photo {activeEvidenceIndex + 1} of {evidenceList.length} • {activeEvidenceIndex === 0 ? 'Front / PDP' : activeEvidenceIndex === 1 ? 'Back Panel' : activeEvidenceIndex === 2 ? 'Side Panel' : 'Other Face'}
+                </div>
+              )}
             </div>
 
+            {/* Thumbnail switcher if multiple package photos were inspected */}
+            {evidenceList.length > 1 && (
+              <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
+                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-600">
+                  <span>Inspected Package Faces ({evidenceList.length})</span>
+                  <span className="text-slate-400 font-normal">Click to switch photo</span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {evidenceList.map((img, idx) => {
+                    const isSelected = idx === activeEvidenceIndex;
+                    const label = idx === 0 ? 'Front' : idx === 1 ? 'Back' : idx === 2 ? 'Side' : 'Other';
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setActiveEvidenceIndex(idx)}
+                        className={`relative aspect-[4/3] rounded-lg overflow-hidden border-2 transition cursor-pointer ${
+                          isSelected
+                            ? 'border-blue-600 ring-2 ring-blue-500/20'
+                            : 'border-slate-200 opacity-70 hover:opacity-100'
+                        }`}
+                      >
+                        <img src={img} alt={`Panel ${idx + 1}`} className="w-full h-full object-cover" />
+                        <span className="absolute bottom-0 inset-x-0 bg-black/70 text-[9px] text-white font-bold text-center truncate px-0.5">
+                          {label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div className="mt-3 flex items-center justify-between text-xs text-slate-500">
-              <span>Verified OCR Extraction</span>
+              <span>Verified Evidence Extraction</span>
               <span className="font-mono">Confidence: {Math.round(record.declarations.confidence * 100)}%</span>
             </div>
           </div>
@@ -566,10 +611,28 @@ export const InspectionResultView: React.FC<InspectionResultViewProps> = ({
               <X className="w-6 h-6" />
             </button>
             <img
-              src={record.imageUri}
+              src={activeImage}
               alt="Expanded Evidence"
-              className="max-h-[85vh] w-auto object-contain rounded-lg shadow-2xl border border-slate-700"
+              className="max-h-[80vh] w-auto object-contain rounded-lg shadow-2xl border border-slate-700"
             />
+            {evidenceList.length > 1 && (
+              <div className="mt-3 flex items-center gap-2 flex-wrap justify-center">
+                {evidenceList.map((img, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setActiveEvidenceIndex(idx)}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition cursor-pointer border ${
+                      idx === activeEvidenceIndex
+                        ? 'bg-blue-600 border-blue-500 text-white'
+                        : 'bg-black/60 border-slate-700 text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    Photo {idx + 1} ({idx === 0 ? 'Front' : idx === 1 ? 'Back' : idx === 2 ? 'Side' : 'Other'})
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

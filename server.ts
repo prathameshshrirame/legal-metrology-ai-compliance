@@ -9,9 +9,9 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
-// Body parser with 25mb limit for high-res package photos
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+// Body parser with 50mb limit for high-res package photos
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Health Check
 app.get('/api/health', (req, res) => {
@@ -399,20 +399,67 @@ function validateAndNormalizeResponse(parsed: any): {
   };
 }
 
-// Multimodal package image inspection endpoint
+// Helper to clean and extract mime type and base64 data from an image string
+function extractImagePayload(imageStr: string): { mimeType: string; base64Data: string } | null {
+  if (!imageStr || typeof imageStr !== 'string' || !imageStr.trim()) return null;
+
+  let mimeType = 'image/jpeg';
+  let base64Data = imageStr.trim();
+
+  if (base64Data.startsWith('data:')) {
+    const isBase64 = base64Data.includes(';base64,');
+    const commaIdx = base64Data.indexOf(',');
+    const meta = base64Data.substring(5, commaIdx !== -1 ? commaIdx : undefined);
+    const extractedMime = meta.split(';')[0];
+    if (extractedMime && extractedMime.includes('/')) {
+      mimeType = extractedMime;
+    }
+    if (commaIdx !== -1) {
+      const rawContent = base64Data.substring(commaIdx + 1);
+      if (isBase64) {
+        base64Data = rawContent.trim();
+      } else {
+        try {
+          const decoded = decodeURIComponent(rawContent);
+          base64Data = Buffer.from(decoded, 'utf8').toString('base64');
+        } catch {
+          base64Data = Buffer.from(rawContent, 'utf8').toString('base64');
+        }
+      }
+    }
+  }
+
+  if (!base64Data || base64Data.trim().length === 0) {
+    return null;
+  }
+  return { mimeType, base64Data };
+}
+
+// Multimodal package image inspection endpoint (supports 1 to 4 package photos in one request)
 app.post('/api/analyze', async (req, res) => {
   try {
-    const { image } = req.body;
+    const { image, images } = req.body;
+
+    // Collect candidate images (supports both multi-photo 'images' array and legacy 'image' string)
+    let rawImagesList: string[] = [];
+    if (Array.isArray(images) && images.length > 0) {
+      rawImagesList = images.filter((img) => typeof img === 'string' && img.trim().length > 0);
+    } else if (typeof image === 'string' && image.trim().length > 0) {
+      rawImagesList = [image.trim()];
+    }
 
     // Validate image input
-    if (!image || typeof image !== 'string' || image.trim().length === 0) {
+    if (rawImagesList.length === 0) {
       res.status(400).json({
         success: false,
-        error: 'Invalid request: A valid image string or base64 data URI is required.',
+        error: 'Invalid request: At least one valid image string or base64 data URI is required.',
         code: 'INVALID_IMAGE',
       });
       return;
     }
+
+    // Enforce up to 4 images maximum
+    const selectedImagesList = rawImagesList.slice(0, 4);
 
     const ai = getGeminiClient();
     if (!ai) {
@@ -426,80 +473,60 @@ app.post('/api/analyze', async (req, res) => {
       return;
     }
 
-    // Extract mime type and clean base64 data
-    let mimeType = 'image/jpeg';
-    let base64Data = image;
-
-    if (image.startsWith('data:')) {
-      const isBase64 = image.includes(';base64,');
-      const commaIdx = image.indexOf(',');
-      const meta = image.substring(5, commaIdx !== -1 ? commaIdx : undefined);
-      const extractedMime = meta.split(';')[0];
-      if (extractedMime && extractedMime.includes('/')) {
-        mimeType = extractedMime;
+    const processedImages: { mimeType: string; base64Data: string }[] = [];
+    for (const rawImg of selectedImagesList) {
+      const parsed = extractImagePayload(rawImg);
+      if (!parsed) {
+        res.status(400).json({
+          success: false,
+          error: 'Invalid image payload: Unable to extract base64 image data.',
+          code: 'INVALID_IMAGE',
+        });
+        return;
       }
-      if (commaIdx !== -1) {
-        const rawContent = image.substring(commaIdx + 1);
-        if (isBase64) {
-          base64Data = rawContent.trim();
-        } else {
-          // If URL-encoded or UTF-8 text (e.g. SVG)
-          try {
-            const decoded = decodeURIComponent(rawContent);
-            base64Data = Buffer.from(decoded, 'utf8').toString('base64');
-          } catch {
-            base64Data = Buffer.from(rawContent, 'utf8').toString('base64');
-          }
-        }
+      // Guard against oversized payload (over ~15MB binary / 20MB base64 per image)
+      if (parsed.base64Data.length > 20 * 1024 * 1024) {
+        res.status(413).json({
+          success: false,
+          error: 'One of the submitted images exceeds the 15MB limit. Please compress or select a smaller image.',
+          code: 'IMAGE_TOO_LARGE',
+        });
+        return;
       }
-    }
-
-    if (!base64Data || base64Data.trim().length === 0) {
-      res.status(400).json({
-        success: false,
-        error: 'Invalid image payload: Unable to extract base64 image data.',
-        code: 'INVALID_IMAGE',
-      });
-      return;
-    }
-
-    // Guard against oversized payload (over ~15MB binary / 20MB base64)
-    if (base64Data.length > 20 * 1024 * 1024) {
-      res.status(413).json({
-        success: false,
-        error: 'Image is too large. Please upload an image under 15MB.',
-        code: 'IMAGE_TOO_LARGE',
-      });
-      return;
+      processedImages.push(parsed);
     }
 
     const prompt = `You are an expert Legal Metrology Compliance Inspection AI analyzing packaged commodity labels and retail packages under the Indian Legal Metrology (Packaged Commodities) Rules, 2011.
 
-STRICT EXTRACTION POLICY:
-1. Strict evidence-based extraction: Only report information actually and clearly visible in the submitted image.
-2. Never guess.
-3. Never infer a value because it is common for a product or expected in this category.
-4. If text is blurry, cropped, obscured, unavailable, or not confidently readable, return null or "Not detected".
-5. Extract statutory declarations including common/generic commodity name (Rule 6(1)(b)), unit sale price (Rule 6(11)) where printed, and best before/use by where printed.
-6. Do NOT make any medical, clinical, or unverified health claims. Report ingredients and nutrition strictly as factual label-derived text.
-7. For each extracted field, preserve evidence traceability by calculating its confidence score between 0.0 and 1.0 based strictly on visible image clarity and print legibility.`;
+MULTI-PHOTO PACKAGE INSPECTION & EVIDENCE SYNTHESIS POLICY:
+1. You have been provided ${processedImages.length} package photo(s) (such as Principal Display Panel / front, back, side panels, or other package faces).
+2. Synthesize and combine evidence across ALL submitted images into a single unified statutory declaration record for the packaged commodity.
+3. If a statutory declaration (such as Net Quantity, MRP, Manufacturing Date, Packer/Manufacturer name & address, Consumer Care helpline, Country of Origin, Generic Name, or Unit Sale Price) appears on ANY of the submitted images, extract it accurately.
+4. Strict evidence-based extraction: Only report information actually and clearly visible in any submitted image.
+5. NEVER GUESS or hallucinate missing values. Never infer a value because it is common for a product or expected in this category.
+6. If a mandatory declaration is not visible or legible on ANY of the provided photos, return null.
+7. If text is blurry, cropped, obscured, unavailable, or not confidently readable, return null or "Not detected".
+8. Extract statutory declarations including common/generic commodity name (Rule 6(1)(b)), unit sale price (Rule 6(11)) where printed, and best before/use by where printed.
+9. Do NOT make any medical, clinical, or unverified health claims. Report ingredients and nutrition strictly as factual label-derived text.
+10. For each extracted field, preserve evidence traceability by calculating its confidence score between 0.0 and 1.0 based strictly on visible image clarity and print legibility across the photos.`;
+
+    const imageParts = processedImages.map((img) => ({
+      inlineData: {
+        mimeType: img.mimeType,
+        data: img.base64Data,
+      },
+    }));
 
     let response;
     try {
-      // Call Gemini 3.8 Flash with structured schema support and transient retry
-      // Note: temperature parameter is removed as Gemini 3.8 Flash uses current API guidance
+      // Call Gemini 3.7 Flash with structured schema support and transient retry
       const requestPayload = {
-        model: 'gemini-3.8-flash',
+        model: 'gemini-3.7-flash',
         contents: [
           {
             role: 'user',
             parts: [
-              {
-                inlineData: {
-                  mimeType,
-                  data: base64Data,
-                },
-              },
+              ...imageParts,
               {
                 text: prompt,
               },
