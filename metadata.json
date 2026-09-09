@@ -1,0 +1,10 @@
+{
+  "name": "Legal Metrology AI Compliance Inspector",
+  "description": "AI-assisted screening of packaged commodity declarations under Legal Metrology (Packaged Commodities) Rules, 2011.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
